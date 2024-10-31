@@ -11,7 +11,6 @@ router = APIRouter()
 
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25MB
 
-@router.get("/transcribe/{model_id}")
 async def transcribe(model_id: str):
     print('[INFO] ROUTER transcribe')
     latest_file_name = await get_latest_audio_file(model_id)
