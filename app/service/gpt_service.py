@@ -1,6 +1,8 @@
-import asyncio
 import os
+import re
+import json
 from dotenv import load_dotenv
+
 from openai import OpenAI
 
 load_dotenv()
@@ -28,39 +30,42 @@ async def get_gpt_response(transcription: str) -> str:
     
     res = response.choices[0].message.content
     resp = res.split('\n')
-    print(f'Response: {resp}')
     return resp
 
-
-
-
 async def make_gpt_response(resp: list[str]) -> str:
+    print('[INFO] EXECUTE make_gpt_response()')
+
     instruction = [conv for conv in resp if '나: ' in conv]
+    instruction = [ins.replace('나: ', '') for ins in instruction]
     output = [conv for conv in resp if '상대: ' in conv]
+    output = [out.replace('상대: ', '') for out in output]
+
     if len(instruction) > len(output):
         instruction = instruction[:-1]
     elif len(output) > len(instruction):
         output = output[1:]
+
+    print(f'[INFO] EXECUTE make_gpt_response() - conversations:\ninstruction: {instruction}\noutput: {output}')
+    print(f'[INFO] EXECUTE make_gpt_response() - conversations:\ninstruction.length: {len(instruction)}\noutput.length: {len(output)}')
+
     prompt = f"""
     Below is a pair of conversation between two people.
 
-    {{
-        "instruction": {instruction},
-        "output": {output}
-    }}
+    Instruction: {str(instruction)}
+    Output: {str(output)}
 
-    Consider the relationship between the two and create about 20 pairs of conversations that are very similar in context to this one.
-    And match the response in the form of json file with parameters 'instruction' and 'output'.
-    Make sure to follow the specified tone: if it's a dialect, use a dialect; if it's standard language, use standard language.
-    The number of generated 'instruction' and 'output' items must be equal.
+    **Task**
+    Use the given pair as a reference and generate approximately 50 more similar pairs of conversations.
+    Then, format the results into a JSONL format for ChatGPT fine-tuning as follows:
 
-    '{{
-        instruction: [ 한글로 생성, , , , ...],
-        output: [한글로 생성 , , , , ...]
-    }}'
+    {{"messages": [{{"role": "system", "content": "You are an assistant tasked with providing engaging and relevant responses based on the given conversation context. Respond thoughtfully and appropriately to user inputs."}}, {{"role": "user", "content": "first instruction"}}, {{"role": "assistant", "content": "first output"}}]}}}}
+    {{"messages": [{{"role": "system", "content": "You are an assistant tasked with providing engaging and relevant responses based on the given conversation context. Respond thoughtfully and appropriately to user inputs."}}, {{"role": "user", "content": "second instruction"}}, {{"role": "assistant", "content": "second output"}}]}}}}
+    {{"messages": [{{"role": "system", "content": "You are an assistant tasked with providing engaging and relevant responses based on the given conversation context. Respond thoughtfully and appropriately to user inputs."}}, {{"role": "user", "content": "third instruction"}}, {{"role": "assistant", "content": "third output"}}]}}}}
+    ...
+    {{"messages": [{{"role": "system", "content": "You are an assistant tasked with providing engaging and relevant responses based on the given conversation context. Respond thoughtfully and appropriately to user inputs."}}, {{"role": "user", "content": "final instruction"}}, {{"role": "assistant", "content": "final output"}}]}}}}
 
-    Only output the resulting JSON data, without any additional text.
-"""
+    Don't print '...' or \' in the result.
+    """
     
     response = openai.chat.completions.create(
         model='gpt-4o-mini',
@@ -70,31 +75,39 @@ async def make_gpt_response(resp: list[str]) -> str:
     )
     return response.choices[0].message.content
 
-async def generate_conversation_pairs(transcription: str, target_count: int = 2000) -> list:
-    all_conversations = {
-        'instruction': [],
-        'output':  []
-    }
-    
-    while len(all_conversations) < target_count:
-        # API 호출로 대화쌍 생성
-        new_conversations = await make_gpt_response(transcription)
-        print(new_conversations)
-        new_conversations = new_conversations.replace('json', '')
-        new_conversations = new_conversations.replace("```", "")
-        print(new_conversations)
 
-        pairs = eval(new_conversations)
-        all_conversations['instruction'].extend(pairs['instruction'])
-        all_conversations['output'].extend(pairs['output'])
-        # 생성된 대화쌍을 리스트에 추가
-        # 중복된 대화쌍을 제거하고, 최대 수를 유지
+async def generate_conversation_pairs(model_id: str, version: str, conversation: str, target_count: int = 2) -> str:
+    file_path = f'{model_id}_version_{int(version)+1}.jsonl'
 
-        print(f"현재까지 생성된 대화쌍 수: {len(all_conversations['instruction'])}")
+    with open(file_path, 'w', encoding='utf-8') as file:
+        cnt = 0
 
-        # 요청 간 지연 추가 (예: 1초)
-        await asyncio.sleep(2)  # API 호출을 위한 지연
-    print("데이터 생성이 완료되었습니다!")
-    return all_conversations  # 목표 수 만큼만 반환
+        while cnt <= target_count:
+            
+            new_conversations = await make_gpt_response(conversation)
+            new_conversations = new_conversations.replace('jsonl', '')
+            new_conversations = new_conversations.replace('json', '')
+            new_conversations = new_conversations.replace("```", "")
+            res = new_conversations.split("\n")
+            print(f'new_conversations: {res}')
 
+            for line in res:
+                print(f'line: {line}')
 
+                try:
+                    if line != '':
+                        line = line.replace('\'', '\"')
+                        json_line = json.loads(line)
+
+                        if re.search('[a-zA-Z]', json_line['messages'][1]['content']) or \
+                           re.search('[a-zA-Z]', json_line['messages'][2]['content']):
+                            continue
+
+                        json.dump(json_line, file, ensure_ascii=False)
+                        file.write('\n')
+                        
+                except: pass
+
+            cnt += 1
+
+    return file_path

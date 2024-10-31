@@ -1,4 +1,3 @@
-# app/containers.py
 from dependency_injector import containers, providers
 import pika
 
